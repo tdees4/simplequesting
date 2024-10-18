@@ -1,0 +1,4 @@
+name: SimpleQuesting
+version: '1.0'
+main: com.glxcier.simpleQuesting.SimpleQuesting
+api-version: '1.20'
