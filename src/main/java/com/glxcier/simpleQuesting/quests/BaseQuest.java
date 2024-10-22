@@ -1,6 +1,7 @@
 package com.glxcier.simpleQuesting.quests;
 
 import java.util.*;
+import java.util.stream.Collectors;
 
 /**
  * The base class that represents all quests.
@@ -13,7 +14,7 @@ public class BaseQuest<TargetType> {
     private static Set<BaseQuest> quests = new HashSet<>();
 
     /* Tracks all quests that each player has. */
-    private static Map<UUID, Set<BaseQuest>> playerQuestMap = new HashMap<>();
+    private static Map<UUID, Set<BaseQuest<?>>> playerQuestMap = new HashMap<>();
 
     /* Name of the quest. (NON-CASE SENSITIVE) (MUST BE UNIQUE) */
     private String name;
@@ -36,11 +37,27 @@ public class BaseQuest<TargetType> {
     /* The quest's type. */
     private final QuestType type;
 
-    protected BaseQuest(QuestType type, String name, String description, int questGoal) {
+    /* The targets of the quest. (EX: Slay quest target could be zombie and creeper) */
+    private final Set<TargetType> targets;
+
+    /* Functional interface that represents what will happen when a user complete the quest. */
+    private CompleteQuestAction completeQuestAction;
+
+    /**
+     * Functional interface that defines what will happen when the quest is
+     * completed.
+     */
+    public interface CompleteQuestAction {
+        public abstract void completeQuest();
+    }
+
+    private BaseQuest(QuestType type, String name, String description, int questGoal, Set<TargetType> targets, CompleteQuestAction completeQuestAction) {
         this.type = type;
         this.name = name;
         this.description = description;
         this.questGoal = questGoal;
+        this.targets = targets;
+        this.completeQuestAction = completeQuestAction;
         completed = false;
         active = false;
     }
@@ -70,14 +87,20 @@ public class BaseQuest<TargetType> {
      * Set the progress of the quest to {@code progress}.
      * @param progress The value to set the quest's progress to.
      * @throws IllegalArgumentException if {@code progress} is less than 0.
+     * @throws IllegalStateException if the quest has already been completed.
      */
     public void setQuestProgress(int progress) {
         if (progress < 0) {
             throw new IllegalArgumentException("Progress cannot be less than 0.");
         }
+        if (completed) {
+            throw new IllegalStateException("Quest has already been completed.");
+        }
 
         if (progress >= questGoal) {
-            // TODO: Quest completion logic.
+            completed = true;
+            active = false;
+            completeQuestAction.completeQuest();
         } else {
             questProgress = progress;
         }
@@ -126,6 +149,13 @@ public class BaseQuest<TargetType> {
     }
 
     /**
+     * @return the list of targets the quest is tracked against.
+     */
+    public Set<TargetType> getTargets() {
+        return targets;
+    }
+
+    /**
      * @return the unique name of the quest.
      */
     public String getName() {
@@ -147,7 +177,7 @@ public class BaseQuest<TargetType> {
             throw new NullPointerException("Cannot pass a null name.");
         }
 
-        BaseQuest quest = getQuest(name);
+        BaseQuest<?> quest = getQuest(name);
 
         if (quest == null) {
             throw new IllegalArgumentException("Must pass a valid quest name.");
@@ -165,8 +195,8 @@ public class BaseQuest<TargetType> {
      * @param name The name of the quest to fetch.
      * @return the quest with the name {@code name} or null if no such quest exists.
      */
-    public static BaseQuest getQuest(String name) {
-        for (BaseQuest quest : quests) {
+    public static BaseQuest<?> getQuest(String name) {
+        for (BaseQuest<?> quest : quests) {
             if (quest.getName().equalsIgnoreCase(name)) {
                 return quest;
             }
@@ -175,11 +205,45 @@ public class BaseQuest<TargetType> {
     }
 
     /**
+     * Returns the quests owned by the player with UUID {@code uuid}.
+     * @param uuid The UUID associated with the player.
+     * @return a set of quests owned by the player.
+     */
+    public static Set<BaseQuest<?>> getPlayerQuests(UUID uuid) {
+        if (uuid == null) {
+            throw new IllegalArgumentException("Cannot pass a null uuid.");
+        }
+        return playerQuestMap.get(uuid);
+    }
+
+    /**
+     * Returns a set of quests with the type {@code type} that are owned by the
+     * player with UUID {@code uuid}.
+     * @param uuid The UUID of the player.
+     * @param type The type of quests to filter for.
+     * @return a set of quests owned by the player with the UUID {@code uuid} and of type {@code type}.
+     * @throws IllegalArgumentException if {@code uuid} or {@code type} are null.
+     */
+    public static Set<BaseQuest<?>> getPlayerQuestsOfType(UUID uuid, QuestType type) {
+        if (uuid == null || type == null) {
+            throw new IllegalArgumentException("Cannot pass a null parameter.");
+        }
+
+        Set<BaseQuest<?>> playerQuests = playerQuestMap.get(uuid);
+        if (playerQuests.isEmpty()) {
+            return new HashSet<>();
+        }
+        return playerQuests.stream()
+                .filter(quest -> quest.getType() == type)
+                .collect(Collectors.toSet());
+    }
+
+    /**
      * @param name The name of the quest to search for.
      * @return true if the quest with the name {@code name} exists, false otherwise.
      */
     public static boolean hasQuest(String name) {
-        BaseQuest dummy = new BaseQuest(null, name, null, 0);
+        BaseQuest<?> dummy = new BaseQuest<>(null, name, null, 0, null, null);
         return quests.contains(dummy);
     }
 
@@ -189,18 +253,28 @@ public class BaseQuest<TargetType> {
      * @param name The unique name of the quest.
      * @param description The description of the quest.
      * @param questGoal The goal of the quest.
+     * @param targets List of targets the quest is tracked against.
+     * @param completeQuestAction The code that runs when the quest is completed.
+     * @param <TargetType> The type of the target. (EX: EntityType)
      * @throws IllegalArgumentException if a quest already has the name {@code name} or if {@code questGoal} is less than or equal to 0.
-     * @throws NullPointerException if {@code type}, {@code name}, or {@code description} are null.
+     * @throws NullPointerException if {@code type}, {@code name}, {@code targets}, {@code completeQuestAction}, or {@code description} are null.
      */
-    public static void createNewQuest(QuestType type, String name, String description, int questGoal) {
-        if (name == null || type == null || description == null) {
+    public static <TargetType> void createNewQuest(QuestType type, String name, String description, int questGoal,
+                                                   Set<TargetType> targets, CompleteQuestAction completeQuestAction) {
+        if (name == null || type == null || description == null || targets == null || completeQuestAction == null) {
             throw new NullPointerException("Cannot pass a null parameter.");
         }
         if (questGoal <= 0) {
             throw new IllegalArgumentException("questGoal cannot be less than or equal to 0.");
         }
+        if (targets.isEmpty()) {
+            throw new IllegalArgumentException("targets cannot be empty.");
+        }
+        if (!(targets.iterator().next() instanceof TargetType)) {
+            throw new IllegalArgumentException("targets must be a TargetType.");
+        }
 
-        BaseQuest quest = new BaseQuest(type, name, description, questGoal);
+        BaseQuest<TargetType> quest = new BaseQuest<>(type, name, description, questGoal, targets, completeQuestAction);
 
         if (quests.contains(quest)) {
             throw new IllegalArgumentException("Must provide a unique quest name.");
@@ -222,7 +296,7 @@ public class BaseQuest<TargetType> {
      */
     @Override
     public boolean equals(Object other) {
-        if (!(other instanceof BaseQuest qOther)) {
+        if (!(other instanceof BaseQuest<?> qOther)) {
             return false;
         }
         return qOther.getName().equalsIgnoreCase(getName());
